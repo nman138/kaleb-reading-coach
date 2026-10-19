@@ -126,7 +126,11 @@
     if(!window.isSecureContext||!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){starting=false;showHelp('Recording needs a secure HTTPS page and a supported browser. Ask a grown-up to open this site in Chrome or Edge.');updateButtons();return;}
     let mic;
     try{
-      mic=await navigator.mediaDevices.getUserMedia({audio:true});
+      let expired=false,permissionTimer;
+      const request=navigator.mediaDevices.getUserMedia({audio:true});
+      request.then(late=>{if(expired||token!==run)late.getTracks().forEach(t=>t.stop());},()=>{});
+      try{mic=await Promise.race([request,new Promise((resolve,reject)=>{permissionTimer=setTimeout(()=>{expired=true;reject(Object.assign(new Error('Microphone permission did not finish'),{name:'TimeoutError'}));},20000);})]);}
+      finally{clearTimeout(permissionTimer);}
       if(token!==run){mic.getTracks().forEach(t=>t.stop());return;}
       stream=mic;const mime=['audio/webm;codecs=opus','audio/webm','audio/mp4'].find(t=>MediaRecorder.isTypeSupported(t));
       const rec=new MediaRecorder(mic,mime?{mimeType:mime}:undefined),owner=session,section=part;
