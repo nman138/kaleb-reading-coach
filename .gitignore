@@ -1,0 +1,9 @@
+# Child session files must stay off GitHub
+*.csv
+*.webm
+*.mp4
+*.m4a
+*.wav
+*.mp3
+*.ogg
+*.zip
