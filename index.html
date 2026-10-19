@@ -114,6 +114,9 @@
       </div>
       <div class="hint" id="hint" role="status">Press <strong>Start reading</strong>, allow the microphone, and read the passage aloud. Try your best, not your fastest.</div>
       <div id="connectionWarning" class="connectionWarning" role="alert" hidden></div>
+      <p class="smallnote" id="inputStatus" role="status">Microphone input has not been checked.</p>
+      <meter id="inputLevel" min="0" max="100" value="0" aria-label="Microphone sound level" style="width:100%;height:16px"></meter>
+      <p class="smallnote" id="recordingStatus" role="status">Recording off.</p>
       <label class="checkbox"><input id="recordAudio" type="checkbox"> Record audio for pronunciation review (optional)</label>
       <p class="smallnote">Recording must be turned on before starting. It stays on this device until you download it. The browser speech service may process audio online.</p>
       <div class="controls">
@@ -171,6 +174,8 @@
   let expected = [], states = [], currentlyListening = false, recognition = null;
   let previousFinal = '', currentFinal = '', currentInterim = '', startsAt = 0, elapsedBefore = 0, timer = null;
   let mediaRecorder = null, mediaStream = null, recordedChunks = [], recordedBlob = null, audioObjectUrl = null;
+  let inputContext = null, inputFrame = null, speechWatchdog = null, micRun = 0;
+  let soundDetected = false, speechEvents = 0;
   let parentMarks = new Map();
   let selectedWordIndex = null;
   const markLabels = {correct:'Read correctly',pronunciation:'Mispronounced',skipped:'Skipped',unsure:'Not sure'};
@@ -325,36 +330,73 @@
     ];
     const csv='\ufeff'+entries.map(row=>row.map(csvCell).join(',')).join('\r\n');
     download(new Blob([csv],{type:'text/csv;charset=utf-8'}),'kaleb-reading-'+new Date().toISOString().slice(0,10)+'.csv');
-    setHint('Session report downloaded with automatic flags and separate parent-confirmed mistakes. Download audio separately if it was recorded.');
+    setHint('CSV download requested. Find the report in your browser Downloads. Download audio separately if it was recorded.');
+  }
+  function monitorInput(stream){
+    const Context=window.AudioContext||window.webkitAudioContext;
+    const track=stream.getAudioTracks()[0];
+    $('inputStatus').textContent='Microphone: '+(track?.label||'browser default')+'. Speak and watch the sound level.';
+    if(!Context)return;
+    inputContext=new Context();
+    const analyser=inputContext.createAnalyser();analyser.fftSize=1024;
+    inputContext.createMediaStreamSource(stream).connect(analyser);
+    const samples=new Float32Array(analyser.fftSize);
+    inputContext.resume().catch(()=>{});
+    const update=()=>{
+      analyser.getFloatTimeDomainData(samples);
+      const rms=Math.sqrt(samples.reduce((sum,x)=>sum+x*x,0)/samples.length);
+      $('inputLevel').value=Math.min(100,rms*500);
+      if(rms>.003)soundDetected=true;
+      inputFrame=requestAnimationFrame(update);
+    };
+    update();
+  }
+  function releaseInput(){
+    if(inputFrame!==null)cancelAnimationFrame(inputFrame);inputFrame=null;
+    if(inputContext){inputContext.close().catch(()=>{});inputContext=null;}
+    if(mediaStream){mediaStream.getTracks().forEach(t=>t.stop());mediaStream=null;}
+    $('inputLevel').value=0;
   }
   async function beginAudioRecording(){
-    if(!$('recordAudio').checked) return;
-    if(!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder){setHint('Audio recording is unavailable in this browser. Speech tracking may still work.');return;}
+    const run=micRun, shouldRecord=$('recordAudio').checked;
+    $('recordingStatus').textContent=shouldRecord?'Preparing local recording...':'Recording off. Input level only; no audio saved.';
+    if(!navigator.mediaDevices?.getUserMedia){$('inputStatus').textContent='Microphone input check unavailable in this browser.';return;}
     try {
-      mediaStream=await navigator.mediaDevices.getUserMedia({audio:true});
-      if(!currentlyListening){mediaStream.getTracks().forEach(t=>t.stop());mediaStream=null;return;}
+      const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+      if(!currentlyListening||run!==micRun){stream.getTracks().forEach(t=>t.stop());return;}
+      mediaStream=stream;
+      try{monitorInput(stream);}catch{$('inputStatus').textContent='Microphone open; input level unavailable.';}
+      if(!shouldRecord)return;
+      if(!window.MediaRecorder){$('recordingStatus').textContent='Recording unavailable in this browser.';return;}
       const mime=['audio/webm;codecs=opus','audio/webm','audio/mp4'].find(type=>MediaRecorder.isTypeSupported(type));
-      mediaRecorder=new MediaRecorder(mediaStream,mime?{mimeType:mime}:undefined);
-      recordedChunks=[];
-      mediaRecorder.ondataavailable=e=>{if(e.data.size)recordedChunks.push(e.data);};
-      mediaRecorder.onstop=()=>{
-        recordedBlob=new Blob(recordedChunks,{type:mediaRecorder.mimeType||'audio/webm'});
+      const recorder=new MediaRecorder(stream,mime?{mimeType:mime}:undefined);
+      mediaRecorder=recorder;
+      const chunks=[];recordedChunks=chunks;
+      recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data);};
+      recorder.onerror=e=>{$('recordingStatus').textContent='Recording failed: '+(e.error?.message||'unknown error');};
+      recorder.onstop=()=>{
+        stream.getTracks().forEach(t=>t.stop());
+        if(run!==micRun)return;
+        recordedBlob=new Blob(chunks,{type:recorder.mimeType||'audio/webm'});
         if(audioObjectUrl)URL.revokeObjectURL(audioObjectUrl);
         audioObjectUrl=URL.createObjectURL(recordedBlob);
         $('player').src=audioObjectUrl; $('audioPanel').hidden=false;
-        if(mediaStream){mediaStream.getTracks().forEach(t=>t.stop());mediaStream=null;}
+        $('recordingStatus').textContent=recordedBlob.size?'Recording ready on this device ('+Math.round(recordedBlob.size/1024)+' KB). Play it below before downloading.':'No audio was saved.';
+        updateButtons();
       };
-      mediaRecorder.start();
-    } catch(err){setHint('Optional audio recording was unavailable. You can still try the live word tracking.');}
+      recorder.start();
+      $('recordingStatus').textContent='Recording locally. Press Stop to finish and play it back.';
+    } catch(err){$('inputStatus').textContent='Microphone error: '+(err.name||'unknown')+'. '+(err.message||'');$('recordingStatus').textContent='Recording could not start.';releaseInput();}
   }
   function finishAudio(){
     if(mediaRecorder?.state==='recording')mediaRecorder.stop();
-    else if(mediaStream){mediaStream.getTracks().forEach(t=>t.stop());mediaStream=null;}
+    releaseInput();
   }
   function stop(){
     if(!currentlyListening)return;
     elapsedBefore=elapsed();currentlyListening=false;startsAt=0;
     clearInterval(timer);timer=null;
+    clearTimeout(speechWatchdog);speechWatchdog=null;
     if(recognition){try{recognition.stop();}catch{}}
     finishAudio();updateButtons();setStatus('Microphone off',false);setHint('Reading stopped. Check the flagged words with a grown-up, then save or export your results.');render();
   }
@@ -362,8 +404,12 @@
     const instance=new Recognition();
     recognition=instance;
     instance.lang='en-CA';instance.continuous=true;instance.interimResults=true;instance.maxAlternatives=1;
+    instance.onstart=()=>{if(currentlyListening&&recognition===instance)setStatus('Speech service started',true);};
+    instance.onaudiostart=()=>{if(currentlyListening&&recognition===instance)setStatus('Microphone open',true);};
+    instance.onspeechstart=()=>{if(currentlyListening&&recognition===instance)setStatus('Speech detected',true);};
     instance.onresult=e=>{
       if(recognition!==instance)return;
+      speechEvents++;clearTimeout(speechWatchdog);setStatus('Receiving words',currentlyListening);
       const finals=[],partials=[];
       for(let i=0;i<e.results.length;i++){
         const res=e.results[i]; if(res.isFinal)finals.push(res[0].transcript);else partials.push(res[0].transcript);
@@ -396,13 +442,20 @@
       if(currentlyListening){setTimeout(()=>{if(currentlyListening&&recognition===instance)try{startRecognizer();}catch{stop();setHint('Recognition stopped unexpectedly. Press Start reading to try again.');}},350);}
     };
     instance.start();
+    if(!speechWatchdog)speechWatchdog=setTimeout(()=>{
+      if(!currentlyListening||speechEvents)return;
+      $('connectionWarning').hidden=false;
+      $('connectionWarning').textContent=soundDetected?'Sound is reaching the microphone, but the browser speech service has returned no words. Check your internet connection; try another browser or network. You can still record and use parent review.':'No sound has been detected. Check the microphone mute switch, Windows Sound > Input, and Chrome Settings > Privacy and security > Site settings > Microphone. Select the microphone you are speaking into, then retry.';
+      setStatus(soundDetected?'No transcript received':'No input sound detected',false);
+    },12000);
   }
   async function start(){
     if(currentlyListening)return;
     if(!Recognition){setHint('This browser does not offer Web Speech Recognition. Try current desktop Chrome or Edge. You can still run the demo below.');return;}
     clearTranscript();recordedBlob=null;$('audioPanel').hidden=true;
+    micRun++;soundDetected=false;speechEvents=0;$('connectionWarning').hidden=true;
     if(audioObjectUrl){URL.revokeObjectURL(audioObjectUrl);audioObjectUrl=null;}
-    currentlyListening=true; startsAt=Date.now();setStatus('Listening now',true);updateButtons();
+    currentlyListening=true; startsAt=Date.now();setStatus('Starting microphone...',false);updateButtons();
     setHint('Read out loud. Green is a word match, not a pronunciation grade. A parent can tap words to record confirmed mispronunciations or skips.');
     timer=setInterval(()=>{$('clock').textContent=clockFormat(elapsed());},1000);
     // Audio recording is optional. Do not block word tracking if the recording service fails.
