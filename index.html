@@ -409,7 +409,7 @@
     instance.onspeechstart=()=>{if(currentlyListening&&recognition===instance)setStatus('Speech detected',true);};
     instance.onresult=e=>{
       if(recognition!==instance)return;
-      speechEvents++;clearTimeout(speechWatchdog);setStatus('Receiving words',currentlyListening);
+      speechEvents++;clearTimeout(speechWatchdog);$('connectionWarning').hidden=true;setStatus(currentlyListening?'Receiving words':'Microphone off',currentlyListening);
       const finals=[],partials=[];
       for(let i=0;i<e.results.length;i++){
         const res=e.results[i]; if(res.isFinal)finals.push(res[0].transcript);else partials.push(res[0].transcript);
