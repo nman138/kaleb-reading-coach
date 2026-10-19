@@ -72,7 +72,7 @@
     else $('passage').querySelectorAll('[data-word]').forEach(el=>{const st=session.sections[part].states[Number(el.dataset.word)];el.className='word '+(['correct','pending'].includes(st)?st:'');});
     $('finishCard').hidden=!session.completed;$('passage').hidden=session.completed;updateButtons();
   }
-  function tick(){if(active){session.sections[part].seconds=sectionBaseSeconds+(performance.now()-startedAt)/1000;save();}}
+  function tick(){if(active){const seconds=(performance.now()-startedAt)/1000;session.sections[part].seconds=sectionBaseSeconds+seconds;if(segment)segment.seconds=seconds;save();}}
   function closeGap(now){if(gapStart!==null&&now-gapStart>=3&&segment)session.gaps.push({section:part,segment:segment.id,start:gapStart,duration:now-gapStart});gapStart=null;}
   function monitor(mic){
     const Context=window.AudioContext||window.webkitAudioContext;
